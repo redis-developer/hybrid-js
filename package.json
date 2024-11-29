@@ -1,7 +1,7 @@
 {
   "name": "hybrid-js",
   "version": "1.0.0",
-  "description": "client-side implementation of various hybrid search algorithms",
+  "description": "client-side implementation of various vector rank fusion algorithms",
   "main": "dist/app.js",
   "scripts": {
     "build": "tsc && npm run lint",
