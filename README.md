@@ -35,7 +35,7 @@ This is a Javascript-based demo of various rank fusion algorithms.
 
 ## Installation <a name="installation"></a>
 ```bash
-git clone x && cd hybrid-js && npm install
+git clone git@github.com:redis-developer/hybrid-js.git && cd hybrid-js && npm install
 ```
 - Rename .env_sample to .env and replace the API key placeholder with your key.
 
