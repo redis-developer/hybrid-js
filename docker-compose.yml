@@ -1,0 +1,45 @@
+networks:
+  redis-net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 192.168.20.0/24
+
+services:
+  re1:
+    image: redislabs/redis:7.8.2-34
+    container_name: re1
+    restart: unless-stopped
+    tty: true
+    cap_add: 
+      - sys_resource
+    ports:
+      - 12000:12000
+      - 8443:8443
+      - 9443:9443
+    networks:
+      redis-net:
+        ipv4_address: 192.168.20.2
+
+  nim:
+    image: nvcr.io/nim/nvidia/nv-embedqa-e5-v5:1.0.1
+    container_name: nim
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: 16GB
+    volumes:
+      - ~/.cache/nim:/opt/nim/.cache
+    ports: 
+      - 8000:8000
+    environment:
+      NGC_API_KEY: ${API_KEY}
+      OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: true
+    networks:
+      redis-net:
+        ipv4_address: 192.168.20.5
+  
