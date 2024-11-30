@@ -21,6 +21,14 @@ type dataSetType = {
     [key:string]: queryType
 };
 
+/**
+ * Helper function for creating a small test set from the MS Marco TREC passage ranking dataset.
+ * -  Uses a hand-built queries.jsonl file to determine which passages are of interest
+ * -  Expects a 'marco' directory with following contents:
+ *      - passv2_dev2_top100.txt file
+ *      - msmarco_v2_passage directory with all the passage subdirectories and file
+ * - Output is written to passages.jsonl in the data directory.
+ */
 async function load() {
     const queryInStream = fs.createReadStream(queriesFile)
     .pipe(JSONStream.parse())

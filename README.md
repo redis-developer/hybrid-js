@@ -17,48 +17,43 @@ This is a Javascript-based demo of various rank fusion algorithms.
 
 ## Features <a name="features"></a>
 - Implementation of the following rank fusion algorithms in Typescript
-    - Borda
-    - DBSF
-    - RRF
-    - RSF
+    - Borda Count Method
+    - Distributed-Based Score Fusion (DBSF)
+    - Reciprocal Rank Fusion (RRF)
+    - Relative Score Fusion (RSF)
 - Nvidia NIM-based embeddings
 - Redis Software vector similarity search
+- Extraction of small test set (10 queries/10 passages each) from [MS MARCO TREC-Deep-Learning](https://github.com/microsoft/msmarco/blob/master/TREC-Deep-Learning.md) data set
 
 ## Prerequisites <a name="prerequisites"></a>
+- Nvidia GPU
+- Nvidia AGC API key
 - Docker
 - Docker Compose
-- Node
-- NPM
-- Typescript
-- Nvida AGC API key
-- Nvidia GPU
+- nodejs
+- npm
+- tsc
 
 ## Installation <a name="installation"></a>
 ```bash
 git clone git@github.com:redis-developer/hybrid-js.git && cd hybrid-js && npm install
 ```
-- Rename .env_sample to .env and replace the API key placeholder with your key.
+- Rename .env_sample to .env and replace the placeholder in API_KEY with your key.
 
 ## Usage <a name="usage"></a>
-### Environment start-up
+### Environment Start
 ```bash
 docker compose up -d
 ```
-### Environment shutdown
+### Environment Stop
 ```bash
 docker compose down
 ```
-### Build
+### App Build
 ```bash
 npm run build
 ```
-### Run
+### App Run
 ```bash
 npm start
 ```
-### Test
-```bash
-npm test
-```
-
-

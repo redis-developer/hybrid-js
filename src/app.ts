@@ -1,4 +1,6 @@
-import { Score, Fusion } from './models/Fusion.js'
+import { Score, Fusion } from './models/Fusion.js';
+import { EmbeddingType, QueryType, NdcgResultType, QueryScores, 
+         RankedScore, Relevance, SearchResult } from './types.js';
 import { AggregateSteps, createClient, RedisClientType, SchemaFieldTypes, VectorAlgorithms } from 'redis';
 import axios from 'axios';
 import fs from 'node:fs';
@@ -8,54 +10,22 @@ import assert from 'node:assert/strict';
 import process from 'node:process';
 import { Buffer } from 'node:buffer';
 
-const REDIS_URL = 'redis://localhost:12000';
-const REDIS_IDX = 'idx';
-const PASSAGES_FILE = `${process.env.PWD}/data/passages.jsonl`;
-const QUERIES_FILE = `${process.env.PWD}/data/queries.jsonl`
 const EMBEDDING_URL = 'http://localhost:8000/v1/embeddings';
 const EMBEDDING_MODEL = 'nvidia/nv-embedqa-e5-v5';
 const EMBEDDING_DIM = 1024;
+const EMBEDDING_TYPE = 'FLOAT32';
+const PASSAGES_FILE = `${process.env.PWD}/data/passages.jsonl`;
+const QUERIES_FILE = `${process.env.PWD}/data/queries.jsonl`
+const REDIS_URL = 'redis://localhost:12000';
+const REDIS_IDX = 'idx';
 
-enum EmbeddingType {
-    Query = 'query',
-    Passage = 'passage'
-};
-
-type Relevance = {
-    pid: string,
-    relevance: number
-};
-
-type NdcgResultType = {
-    qid: string,
-    ndcg: number
-};
-
-enum QueryType {
-    KNN,
-    FTS,
-    HYB
-};
-
-type QueryScores = {
-    qid: string,
-    results: {
-        cos: Array<Score>,
-        fts: Array<Score>
-    }
-}
-
-type RankedScore = {
-    id: string,
-    score: number,
-    rank: number
-}
-
-type SearchResult = {
-    qid: string,
-    scores: Array<RankedScore>
-}
-
+/**
+ * Creates a Redis index with a schema that includes a text and vector field.
+ * 
+ * @async
+ * @function
+ * @param { RedisClientType } client 
+ */
 async function createIndex(client: RedisClientType) {
     try { await client.ft.dropIndex(REDIS_IDX); }
     catch {void 0};
@@ -69,22 +39,83 @@ async function createIndex(client: RedisClientType) {
             type: SchemaFieldTypes.VECTOR,
             AS: 'vector',
             ALGORITHM: VectorAlgorithms.FLAT,
-            TYPE: 'FLOAT32',
+            TYPE: EMBEDDING_TYPE,
             DIM: EMBEDDING_DIM,
             DISTANCE_METRIC: 'COSINE'
         }}, 
         { ON: 'JSON', PREFIX: 'passage:' });
-}
+};
 
-async function getEmbedding(text:string, type: EmbeddingType) {
+/**
+ * Reformats a ranked fusion array (array of IDs) into an array of objects that include the ID and its
+ * original MS Marco relevance rank.
+ * 
+ * @function
+ * @param { Array<string> } inArr sorted array of IDs returned from fusion function
+ * @param { Array<RankedScore> } orig array IDs and their corresponding MS Marco relevance ranks
+ * @returns { Array<RankedScore> }
+ */
+function formatFused(inArr: Array<string>, orig: Array<RankedScore>): Array<RankedScore> {
+    const outArr: Array<RankedScore> = [];
+
+    for (let i=0, j=inArr.length; i < inArr.length; i++, j--) {
+        const match: RankedScore | undefined = orig.find(elm => elm.id == inArr[i]);
+        if (match) {
+            outArr[i] = {id: inArr[i], score: j, rank: match['rank']}
+        }
+    }
+    return outArr;
+};
+
+/**
+ * Performs a REST API call to a Nvidia NIM embedding service.
+ * 
+ * @async
+ * @function
+ * @param {string} text passage or query to be vectorized
+ * @param { EmbeddingType } type type of vector to be created (query or passage)
+ * @returns { Promise<Array<number>> }
+ */
+async function getEmbedding(text:string, type: EmbeddingType): Promise<Array<number>> {
     const result = await axios.post(EMBEDDING_URL, {
             input: [text],
             model: EMBEDDING_MODEL,
             input_type: type
     });
     return result.data.data[0].embedding;
-}
+};
 
+/**
+ * Helper function for creating the Redis vector index and loading the MS Marco passages from file to
+ * Redis JSON documents.
+ * 
+ * @async
+ * @function
+ * @param { RedisClientType } client 
+ */
+async function loadRedis(client: RedisClientType) {
+    const passagesStr = fs.createReadStream(PASSAGES_FILE)
+        .pipe(JSONStream.parse())
+        .pipe(new Stream.PassThrough({objectMode: true}))
+
+    await createIndex(client);
+    for await (const doc of passagesStr) {
+        doc['vector'] = await getEmbedding(doc['text'], EmbeddingType.Passage);
+        await client.json.set(`passage:${doc['pid']}`, '$', doc);
+    }
+};
+
+/**
+ * Implements the Normalized Discount Cumulative Gain algorithm.  The input is an array of SearchResults.
+ * Each SearchResult is a query ID and a sorted array of RankedScores.  A RankedScore is a passage ID,
+ * it's score yielded from a fusion algorithm, and its original MS Marco relevance rank.
+ * 
+ * The function measures how closely the generated ranks are to the original MS Marco ranks.
+ * 
+ * @function
+ * @param { Array<SearchResult> } searchResults results from fusion algorithm
+ * @returns { Array<NdcgResultType> } array of NDCG calculations, one per query ID
+ */
 function ndcg(searchResults: Array<SearchResult>): Array<NdcgResultType> {
     const metrics: Array<NdcgResultType> = [];
     const calcDCG = (acc: number, elm:Relevance, index: number) => acc + (Math.pow(elm['relevance'], 2) - 1) / Math.log2(index + 2);
@@ -102,6 +133,19 @@ function ndcg(searchResults: Array<SearchResult>): Array<NdcgResultType> {
     return metrics;
 }
 
+/**
+ * Implements a Redis FT.AGGREGATION query.  The function is parameterized to allow for full-text, KNN,
+ * or hybrid queries.  The node-redis query structure is built according to the query type.  The return
+ * value is an array of QueryScores objects.  Each QueryScore object is a query ID along with the Redis
+ * search result which could be full-text score, vector distance score or both in the case of a hybrid
+ * query.
+ * 
+ * @async
+ * @function
+ * @param { RedisClientType } client 
+ * @param { QueryType } queryType 
+ * @returns { Promise<Array<QueryScores>> }
+ */
 async function search(client: RedisClientType, queryType: QueryType): Promise<Array<QueryScores>> {    
     const queries = fs.createReadStream(QUERIES_FILE)
     .pipe(JSONStream.parse())
@@ -191,30 +235,10 @@ async function search(client: RedisClientType, queryType: QueryType): Promise<Ar
     return allResults;
 }
 
-async function loadRedis(client: RedisClientType) {
-    const passagesStr = fs.createReadStream(PASSAGES_FILE)
-        .pipe(JSONStream.parse())
-        .pipe(new Stream.PassThrough({objectMode: true}))
-
-    await createIndex(client);
-    for await (const doc of passagesStr) {
-        doc['vector'] = await getEmbedding(doc['text'], EmbeddingType.Passage);
-        await client.json.set(`passage:${doc['pid']}`, '$', doc);
-    }
-}
-
-function formatFused(inArr: Array<string>, orig: Array<RankedScore>): Array<RankedScore> {
-    const outArr: Array<RankedScore> = [];
-
-    for (let i=0, j=inArr.length; i < inArr.length; i++, j--) {
-        const match: RankedScore | undefined = orig.find(elm => elm.id == inArr[i]);
-        if (match) {
-            outArr[i] = {id: inArr[i], score: j, rank: match['rank']}
-        }
-    }
-    return outArr;
-}
-
+/**
+ * Main routine. Perform the rank fusion algorithms on all queries and associated MS Marco passages then calculates
+ * a NDCG average agains the Marco relevances across queries for each fusion type.
+ */
 (async () => {
     const client: RedisClientType = createClient({url: REDIS_URL});
     client.on('error', (err) => {
@@ -224,15 +248,6 @@ function formatFused(inArr: Array<string>, orig: Array<RankedScore>): Array<Rank
     await loadRedis(client);
 
     const mean = (acc: number, cur: NdcgResultType, _: number, arr: Array<NdcgResultType>) => acc + cur.ndcg/arr.length;
-    
-    const knn = await search(client, QueryType.KNN);
-    const knnScores: Array<SearchResult> = knn.map((elm) => ({'qid': elm.qid, 'scores': elm.results.cos}));
-    console.log(`KNN NDCG Mean: ${ndcg(knnScores).reduce(mean,0).toFixed(4)}`);
-    
-    //const fts = await search(client, QueryType.FTS);
-    //const ftsScores: Array<SearchResult> = fts.map((elm) => ({'qid': elm.qid, 'scores': elm.results.fts}));
-    //console.log(`FTS NDCG Mean: ${ndcg(ftsScores).reduce(mean,0).toFixed(4)}`);
-    
     const hyb = await search(client, QueryType.HYB);
     const bordaScores: Array<SearchResult> = [];
     const rrfScores: Array<SearchResult> = [];
@@ -249,9 +264,19 @@ function formatFused(inArr: Array<string>, orig: Array<RankedScore>): Array<Rank
 
     });
     console.log(`Borda NDCG Mean: ${ndcg(bordaScores).reduce(mean,0).toFixed(4)}`);
-    console.log(`RRF NDCG Mean: ${ndcg(rrfScores).reduce(mean,0).toFixed(4)}`);
-    console.log(`RSF NDCG Mean: ${ndcg(rsfScores).reduce(mean,0).toFixed(4)}`);
-    console.log(`DBSF NDCG Mean: ${ndcg(dbsfScores).reduce(mean,0).toFixed(4)}`);
+    console.log(`RRF NDCG Mean:   ${ndcg(rrfScores).reduce(mean,0).toFixed(4)}`);
+    console.log(`RSF NDCG Mean:   ${ndcg(rsfScores).reduce(mean,0).toFixed(4)}`);
+    console.log(`DBSF NDCG Mean:  ${ndcg(dbsfScores).reduce(mean,0).toFixed(4)}`);
+
+    /*
+    const knn = await search(client, QueryType.KNN);
+    const knnScores: Array<SearchResult> = knn.map((elm) => ({'qid': elm.qid, 'scores': elm.results.cos}));
+    console.log(`KNN NDCG Mean: ${ndcg(knnScores).reduce(mean,0).toFixed(4)}`);
+    
+    const fts = await search(client, QueryType.FTS);
+    const ftsScores: Array<SearchResult> = fts.map((elm) => ({'qid': elm.qid, 'scores': elm.results.fts}));
+    console.log(`FTS NDCG Mean: ${ndcg(ftsScores).reduce(mean,0).toFixed(4)}`);
+    */
 
     await client.disconnect();
 })();
