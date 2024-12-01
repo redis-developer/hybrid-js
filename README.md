@@ -13,7 +13,7 @@
 This is a Javascript-based demo of various rank fusion algorithms.  
 
 ## Architecture <a name="architecture"></a>
-![architecture]()  
+![architecture](https://docs.google.com/drawings/d/e/2PACX-1vQN-ly-XOxXlf-FEb35WehlstPcHEQeIwxfWit5ZSAHY9OZmxh8JkzTxw2saWRDnP2Jx5CiVmss-KF3/pub?w=856&h=593)  
 
 ## Features <a name="features"></a>
 - Implementation of the following rank fusion algorithms in Typescript
