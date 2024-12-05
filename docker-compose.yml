@@ -7,7 +7,7 @@ networks:
 
 services:
   re1:
-    image: redislabs/redis:7.8.2-34
+    image: redislabs/redis:latest
     container_name: re1
     restart: unless-stopped
     tty: true
